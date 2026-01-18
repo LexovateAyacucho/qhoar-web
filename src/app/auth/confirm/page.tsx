@@ -39,55 +39,31 @@ function ConfirmContent() {
             processingRef.current = true;
 
             try {
-                // Intento 1: Verificar el código
-                const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-
+                const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
                 if (!exchangeError) {
-                    // Éxito inmediato
                     setStatus('success');
                     return;
                 }
-
-                // Si hay error, verificamos qué tipo es
                 console.log('Error de exchange:', exchangeError);
+                const msg = exchangeError.message?.toLowerCase() || '';
+                const isTokenIssue =
+                    msg.includes('invalid') ||
+                    msg.includes('expired') ||
+                    msg.includes('consumed') ||
+                    msg.includes('already used') ||
+                    exchangeError.code === 'otp_expired' ||
+                    exchangeError.status === 401 ||
+                    exchangeError.status === 403;
 
-                const isTokenError =
-                    exchangeError.message?.toLowerCase().includes('invalid') ||
-                    exchangeError.message?.toLowerCase().includes('expired') ||
-                    exchangeError.message?.toLowerCase().includes('already been used') ||
-                    exchangeError.status === 403 ||
-                    exchangeError.status === 401;
-
-                if (isTokenError) {
-                    // Token ya fue usado - Verificar si el usuario existe y está confirmado
-                    try {
-                        const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-                        if (!userError && user?.email_confirmed_at) {
-                            // Usuario confirmado con éxito (el bot hizo su trabajo)
-                            console.log('Usuario ya confirmado:', user.email);
-                            setStatus('success');
-                        } else if (!userError && user && !user.email_confirmed_at) {
-                            // Usuario existe pero NO confirmado (caso raro)
-                            console.log('Usuario existe pero no confirmado');
-                            setNeedsManualConfirm(true);
-                            setStatus('already_verified');
-                        } else {
-                            // No hay sesión activa - necesitamos que el usuario inicie sesión manualmente
-                            console.log('No hay sesión activa');
-                            setNeedsManualConfirm(true);
-                            setStatus('already_verified');
-                        }
-                    } catch (userCheckError) {
-                        console.error('Error verificando usuario:', userCheckError);
-                        setNeedsManualConfirm(true);
-                        setStatus('already_verified');
-                    }
+                if (isTokenIssue) {
+                    console.log('Token inválido/usado. Asumiendo intercepción de bot o doble click.');
+                    setStatus('already_verified');
+                    setNeedsManualConfirm(true);
                 } else {
-                    // Error diferente (timeout, red, etc.)
                     setStatus('error');
-                    setErrorMessage(exchangeError.message || 'Error desconocido al verificar');
+                    setErrorMessage(exchangeError.message || 'Error desconocido');
                 }
+
             } catch (err) {
                 console.error('Error general:', err);
                 const errorMsg = err instanceof Error ? err.message : 'Error inesperado de red.';
