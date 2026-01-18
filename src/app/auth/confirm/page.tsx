@@ -13,6 +13,7 @@ function ConfirmContent() {
     const [errorMessage, setErrorMessage] = useState('');
     const [inputEmail, setInputEmail] = useState(emailFromUrl);
     const [resending, setResending] = useState(false);
+    const [needsManualConfirm, setNeedsManualConfirm] = useState(false);
     const supabase = createClient();
     const processingRef = useRef(false);
 
@@ -38,35 +39,57 @@ function ConfirmContent() {
             processingRef.current = true;
 
             try {
-                const { error } = await supabase.auth.exchangeCodeForSession(code);
+                // Intento 1: Verificar el código
+                const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
 
-                if (!error) {
+                if (!exchangeError) {
+                    // Éxito inmediato
                     setStatus('success');
-                } else {
+                    return;
+                }
 
-                    const isTokenUsed =
-                        error.message?.includes('invalid') ||
-                        error.message?.includes('expired') ||
-                        error.message?.includes('already been used') ||
-                        error.status === 403;
+                // Si hay error, verificamos qué tipo es
+                console.log('Error de exchange:', exchangeError);
 
-                    if (isTokenUsed) {
-                        const { data: { user } } = await supabase.auth.getUser();
+                const isTokenError =
+                    exchangeError.message?.toLowerCase().includes('invalid') ||
+                    exchangeError.message?.toLowerCase().includes('expired') ||
+                    exchangeError.message?.toLowerCase().includes('already been used') ||
+                    exchangeError.status === 403 ||
+                    exchangeError.status === 401;
 
-                        if (user && user.email_confirmed_at) {
+                if (isTokenError) {
+                    // Token ya fue usado - Verificar si el usuario existe y está confirmado
+                    try {
+                        const { data: { user }, error: userError } = await supabase.auth.getUser();
 
+                        if (!userError && user?.email_confirmed_at) {
+                            // Usuario confirmado con éxito (el bot hizo su trabajo)
+                            console.log('Usuario ya confirmado:', user.email);
                             setStatus('success');
+                        } else if (!userError && user && !user.email_confirmed_at) {
+                            // Usuario existe pero NO confirmado (caso raro)
+                            console.log('Usuario existe pero no confirmado');
+                            setNeedsManualConfirm(true);
+                            setStatus('already_verified');
                         } else {
-
+                            // No hay sesión activa - necesitamos que el usuario inicie sesión manualmente
+                            console.log('No hay sesión activa');
+                            setNeedsManualConfirm(true);
                             setStatus('already_verified');
                         }
-                    } else {
-                        // Otro tipo de error
-                        setStatus('error');
-                        setErrorMessage(error.message || 'Error al verificar el enlace');
+                    } catch (userCheckError) {
+                        console.error('Error verificando usuario:', userCheckError);
+                        setNeedsManualConfirm(true);
+                        setStatus('already_verified');
                     }
+                } else {
+                    // Error diferente (timeout, red, etc.)
+                    setStatus('error');
+                    setErrorMessage(exchangeError.message || 'Error desconocido al verificar');
                 }
             } catch (err) {
+                console.error('Error general:', err);
                 const errorMsg = err instanceof Error ? err.message : 'Error inesperado de red.';
                 setStatus('error');
                 setErrorMessage(errorMsg);
@@ -77,18 +100,36 @@ function ConfirmContent() {
     }, [searchParams, supabase]);
 
     const handleResend = async () => {
-        if (!inputEmail) return;
+        if (!inputEmail) {
+            alert('Por favor ingresa tu correo electrónico');
+            return;
+        }
+
         setResending(true);
-        const { error } = await supabase.auth.resend({
-            type: 'signup',
-            email: inputEmail,
-            options: {
-                emailRedirectTo: `https://qhoar-web.vercel.app/auth/confirm?email=${encodeURIComponent(inputEmail)}`
+        try {
+            const { error } = await supabase.auth.resend({
+                type: 'signup',
+                email: inputEmail,
+                options: {
+                    emailRedirectTo: `https://qhoar-web.vercel.app/auth/confirm?email=${encodeURIComponent(inputEmail)}`
+                }
+            });
+
+            if (error) {
+                if (error.message?.includes('already confirmed')) {
+                    alert('✓ Tu cuenta ya fue verificada. Intenta iniciar sesión en la app.');
+                } else {
+                    throw error;
+                }
+            } else {
+                alert('✓ Nuevo enlace enviado. Revisa tu correo (incluyendo spam).');
             }
-        });
-        setResending(false);
-        if (error) alert(error.message);
-        else alert('¡Listo! Revisa tu correo (y spam) para el nuevo enlace.');
+        } catch (e) {
+            const errorMsg = e instanceof Error ? e.message : 'Error al reenviar';
+            alert(`Error: ${errorMsg}`);
+        } finally {
+            setResending(false);
+        }
     };
 
     return (
@@ -102,6 +143,7 @@ function ConfirmContent() {
                     <div className="py-8">
                         <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-orange-500 mx-auto mb-6"></div>
                         <h2 className="text-xl font-bold text-gray-800">Verificando enlace...</h2>
+                        <p className="text-sm text-gray-500 mt-2">Esto puede tomar unos segundos</p>
                     </div>
                 )}
 
@@ -112,13 +154,16 @@ function ConfirmContent() {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path>
                             </svg>
                         </div>
-                        <h2 className="text-3xl font-bold text-gray-900 mb-4">¡Cuenta Confirmada!</h2>
-                        <p className="text-gray-600 mb-8">Tu correo ha sido verificado exitosamente. Ya puedes iniciar sesión.</p>
+                        <h2 className="text-3xl font-bold text-gray-900 mb-4">¡Cuenta Confirmada! ✓</h2>
+                        <p className="text-gray-600 mb-8">
+                            Tu correo <strong>{inputEmail || 'ha sido'}</strong> verificado exitosamente.
+                            <br />Ya puedes iniciar sesión en la app.
+                        </p>
                         <a
                             href="qhoar://home"
                             className="block w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-xl transition-all mb-4"
                         >
-                            Abrir la App
+                            📱 Abrir Qhoar App
                         </a>
                         <Link href="/" className="text-sm text-gray-500 underline">
                             Volver al inicio
@@ -128,53 +173,87 @@ function ConfirmContent() {
 
                 {status === 'already_verified' && (
                     <div className="animate-fade-in-up py-4">
-                        <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                            <span className="text-4xl">🔐</span>
+                        <div className="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <span className="text-4xl">⚠️</span>
                         </div>
-                        <h2 className="text-2xl font-bold text-gray-900 mb-3">Enlace ya usado</h2>
-                        <p className="text-gray-600 mb-6 text-sm px-2">
-                            Este enlace de verificación ya fue procesado. <b>Tu cuenta probablemente ya está activa.</b>
-                        </p>
-                        <div className="space-y-3">
-                            <a
-                                href="qhoar://home"
-                                className="block w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl transition-all shadow-md shadow-orange-200"
-                            >
-                                Intentar Iniciar Sesión
-                            </a>
-                            <div className="pt-6 border-t border-gray-100 mt-6">
-                                <p className="text-xs text-gray-400 mb-3">¿Sigues sin poder entrar? Solicita un nuevo enlace:</p>
-                                <div className="flex gap-2">
-                                    <input
-                                        type="email"
-                                        value={inputEmail}
-                                        onChange={(e) => setInputEmail(e.target.value)}
-                                        placeholder="Tu correo..."
-                                        className="flex-1 p-2 border border-gray-200 rounded-lg text-sm"
-                                    />
-                                    <button
-                                        onClick={handleResend}
-                                        disabled={resending}
-                                        className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-300 disabled:opacity-50"
-                                    >
-                                        {resending ? '...' : 'Reenviar'}
-                                    </button>
+                        <h2 className="text-2xl font-bold text-gray-900 mb-3">Enlace ya procesado</h2>
+
+                        {needsManualConfirm ? (
+                            <div className="space-y-4">
+                                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-left">
+                                    <p className="text-sm text-amber-900 leading-relaxed">
+                                        <strong>¿Qué pasó?</strong><br />
+                                        Tu enlace de verificación fue procesado automáticamente por medidas de seguridad de tu proveedor de email.
+                                    </p>
+                                </div>
+
+                                <p className="text-gray-600 text-sm">
+                                    <strong>Sigue estos pasos:</strong>
+                                </p>
+
+                                <div className="bg-gray-50 rounded-lg p-4 text-left space-y-3">
+                                    <div className="flex gap-3">
+                                        <span className="text-lg">1️⃣</span>
+                                        <p className="text-sm text-gray-700">
+                                            Abre la app Qhoar e intenta <strong>iniciar sesión</strong> con tu correo y contraseña
+                                        </p>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <span className="text-lg">2️⃣</span>
+                                        <p className="text-sm text-gray-700">
+                                            Si no te deja entrar, solicita un <strong>nuevo enlace</strong> abajo
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <a
+                                    href="qhoar://home"
+                                    className="block w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl transition-all shadow-md"
+                                >
+                                    📱 Abrir App e Intentar Login
+                                </a>
+
+                                <div className="pt-6 border-t border-gray-100">
+                                    <p className="text-xs text-gray-400 mb-3 font-medium">¿SIGUE SIN FUNCIONAR?</p>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="email"
+                                            value={inputEmail}
+                                            onChange={(e) => setInputEmail(e.target.value)}
+                                            placeholder="tu@correo.com"
+                                            className="flex-1 p-3 border border-gray-200 rounded-lg text-sm"
+                                        />
+                                        <button
+                                            onClick={handleResend}
+                                            disabled={resending}
+                                            className="bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {resending ? '⏳' : '📧 Reenviar'}
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
+                        ) : (
+                            <p className="text-gray-600 mb-6 text-sm px-2">
+                                Tu cuenta probablemente ya está activa. Intenta iniciar sesión en la app.
+                            </p>
+                        )}
                     </div>
                 )}
 
                 {status === 'error' && (
                     <div className="py-4">
                         <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <span className="text-3xl">⚠️</span>
+                            <span className="text-3xl">❌</span>
                         </div>
-                        <h2 className="text-xl font-bold text-gray-900 mb-2">Enlace expirado</h2>
-                        <p className="text-gray-500 text-sm mb-6">{errorMessage}</p>
+                        <h2 className="text-xl font-bold text-gray-900 mb-2">Error de Verificación</h2>
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-6">
+                            <p className="text-red-700 text-sm font-mono">{errorMessage}</p>
+                        </div>
+
                         <div className="bg-gray-50 p-4 rounded-xl text-left">
-                            <label className="text-xs font-bold text-gray-400">SOLICITAR NUEVO ENLACE</label>
-                            <div className="flex gap-2 mt-2">
+                            <label className="text-xs font-bold text-gray-400 mb-2 block">SOLICITAR NUEVO ENLACE</label>
+                            <div className="flex gap-2">
                                 <input
                                     type="email"
                                     value={inputEmail}
@@ -187,7 +266,7 @@ function ConfirmContent() {
                                     disabled={resending}
                                     className="bg-gray-900 text-white px-4 rounded-lg font-bold disabled:opacity-50"
                                 >
-                                    {resending ? '...' : 'Enviar'}
+                                    {resending ? '⏳' : 'Enviar'}
                                 </button>
                             </div>
                         </div>
@@ -201,7 +280,7 @@ function ConfirmContent() {
 export default function ConfirmPage() {
     return (
         <Suspense fallback={
-            <div className="min-h-screen flex items-center justify-center">
+            <div className="min-h-screen flex items-center justify-center bg-gray-50">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-orange-500"></div>
             </div>
         }>
